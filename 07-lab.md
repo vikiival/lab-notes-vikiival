@@ -1,190 +1,148 @@
-# Lab 6 - Recursive SQL
+# Session 6 - Fulltext
 
-Grading: 3pt
+Grading: 2pt
 
 ## Setup
 
-Download and run the docker container as usual
-
 ```
-docker run -p 5432:5432 fiitpdt/postgres-recursive
-```
-
-> database name: pdt
-
-# Labs
-
-1. Write a recursive query which returns a number and its factorial for all
-   numbers up to 10. :coffee:
-
-   ```
-      ------------
-      | 0  | 1   |
-      | 1  | 1   |
-      | 2  | 2   |
-      | 3  | 6   |
-      | 4  | 24  |
-      | 5  | 120 |
-      ...
-
-   ```
-
-   First we need to decide what is our starting point, for us it was 0 and 1 next we made query which incremented counter and then counted factorial like `other * (n+1)`
-
-   Final Query:
-   ```sql
-   with recursive fact(n, other) as (
-    select 0, 1
-    union all
-    select n + 1, other * (n+1) from fact
-   )
-   select n, other from fact limit 10
-   ```
-
-2) Write a recursive query which returns a number and the number in Fibonacci
-   sequence at that position for the first 20 Fibonacci numbers. :coffee::coffee:
-
+docker run -p 5432:5432 fiitpdt/postgres-fulltext
+psql -U postgres -h localhost -p 5432 -d oz
 ```
 
-      ------------
-      | 1  | 1   |
-      | 2  | 2   |
-      | 3  | 3   |
-      | 4  | 5   |
-      | 5  | 8   |
-      | 6  | 13  |
-      | 7  | 21  |
-      ...
+## Labs
 
+#### 1. Implement fulltext search in contracts. The search should be case insensitive and accents insensitive. It should support searching by 
+- contract name
+- department
+- customer
+- supplier
+- by supplier ICO
+- and by contract code (anywhere inside contract code, such as `OIaMIS`)
+
+
+Create case insensitive search configuration:
+```sh
+create extension unaccent;
+create text search configuration sk(copy = simple);
+alter text search configuration sk alter mapping for
+word with unaccent, simple;
 ```
-In Fibonacci sequence there are numbers like 1,1,2,3,5,8 so to calculate number we need to make sum 2 numbers before.
-We start with values 0,1,0 (counter, value, value_before). In query next value is value + value_before and as we said earlier we need to remember actual value.
+Add trigram
+```sh
+create extension pg_trgm;
+```
 
-Final Query:
+For simplicity we will create a materialized view:
+> View is like sub-table, Materialized means that view is also stored
 ```sql
-
-with recursive fib(sa, value, value_before) as (
-    select 0,1,0
-    union all
-    select sa +1 , value + value_before , value  from fib
-)
- select sa, value from fib limit 10;
-
+create materialized view search_request as
+(
+    select id,
+       to_tsvector('sk', name || ' ' || department || ' ' || customer || ' ' || supplier) as vector,
+       supplier_ico::text as supplier_ico,
+       published_on,
+       identifier
+    from contracts
+);
 ```
 
-3. Table `product_parts` contains products and product parts which are needed to build them. A product part may be used to assemble another product part or product, this is stored in the `part_of_id` column. When this column contains `NULL` it means that it is the final product. List all parts and their components that are needed to build a `'chair'`. :coffee::coffee:
-
-   ```
-       ------------
-       "armrest"
-       "metal leg"
-       "metal rod"
-       "cushions"
-       "red dye"
-       "cotton"
-       ------------
-   ```
-
-   As the starting point we select chair then we recursive iterate to those which are connected with chair via part_of_id it selects next parts and so on.
-   
-Final Querry:
-   ```sql
-   with recursive part as (
-    select id, name, part_of_id from  product_parts where name = 'chair'
-    union
-    select pp.id, pp.name, pp.part_of_id from product_parts pp
-    join part p on p.id = pp.part_of_id
-   )
-   select name
-   from part where part_of_id is not null;
-   ```
-
-4. List all bus stops between 'Zochova' and 'Zoo' for line 39. Also include the hop number on that trip between the two stops. :coffee::coffee:
-
-   ```
-       ------------------------------
-        name         | hop
-       ------------------------------
-        Chatam Sófer | 1
-        Park kultúry | 2
-        Lafranconi   | 3
-       ------------------------------
-   ```
-
-   We hacked this a little bit we used ZOO as starting point cause we have only one way routes for each line. Then we selected next stop which stating point was the ending point of previous route.
-
-   Final Querry:
-   ```sql
-
-      with recursive route(hop, start_stop_id, end_stop_id, name) as (
-      select 0, start_stop_id, end_stop_id, stops.name from connections join stops on connections.start_stop_id = stops.id where line = '39' and stops.name = 'Zoo'
-      union
-      select r.hop + 1, c.start_stop_id, c.end_stop_id, s.name from connections c
-        join stops s on c.start_stop_id = s.id
-        join route r on r.end_stop_id =  c.start_stop_id
-      where line = '39' and r.name != 'Zochova'
-      )
-      select  * from route;
-
-   ```
-
-## Optional
-
-1. Which one of all the parts that are used to build a `'chair'` has longest shipping time? :coffee::coffee:
-
-   ```
-       ------------------------------
-        name         | shipping_time
-       ------------------------------
-        metal rod    | 10
-       ------------------------------
-   ```
-
-Almost same query as previous chair excercise, but we added shipping time, then ordered it by shipping time and limit 1;
-
-Final Querry:
+Added Fast inverted indexes for ico, identifier and vector:
 ```sql
-
-with recursive part as (
- select id, name, part_of_id, shipping_time from  product_parts where name = 'chair'
- union
- select pp.id, pp.name, pp.part_of_id, pp.shipping_time from product_parts pp
- join part p on p.id = pp.part_of_id
-)
-select name, shipping_time
-from part where part_of_id is not null order by shipping_time desc limit 1;
+create index index_request_identifier on search_request using gin(identifier gin_trgm_ops);
+create index index_request_supplier_ico on search_request using gin(supplier_ico gin_trgm_ops);
+create index index_request_vector on search_request using gin(vector);
 ```
 
-2. Is it cheaper to order a finished chair from a supplier or is it cheaper if we order the basic components of a chair and build it from scratch? We are only interested in the basic components, e.g., to build a chair we need an armrest, but we do not care about its price since we want to build it from scratch using cotton and red dye. :coffee::coffee::coffee:
+Create select for full text search, note that supplier_ico and identifier needs to be searched separately because of trigram indexes:
+```sql
+select c.*
+from search_request req
+join contracts c on c.id = req.id
+where vector @@ to_tsquery('sk', 'oracle') or req.identifier like '%Z38%' or req.supplier_ico like '%0721%'
+```
 
-   ```
-       --------------------------------------
-        chair_price_from_basic | chair_price
-       --------------------------------------
-        14                     | 130
-       --------------------------------------
-   ```
+for optimalization we add indexes on id:
+```sql
+create index index_contracts_id on contracts(id);
+create index index_request_id on search_request(id);
+```
 
-3. Find line combinations which will get me from 'Nad lúčkami' to 'Zochova' with reasonable transfers between lines. :coffee::coffee::coffee::coffee:
 
+
+#### 2. Boost newer contracts, so they have a higher chance of being at top positions.
+
+As boosting algorithm we took rank and divided it by days between `now()` and `published_on` divide by 365(normalization)
+
+```sql
+select
+       c.*,
+       ts_rank(vector, to_tsquery('sk', 'oracle')) as rank
+from search_request req
+join contracts c on c.id = req.id
+where vector @@ to_tsquery('sk', 'oracle') or req.identifier like '%Z38%' or req.supplier_ico like '%0721%'
+order by ts_rank(vector, to_tsquery('sk', 'oracle')) / (extract(days from (now() - req.published_on)) / 365) desc;
+```
+
+#### 3. Try to find some limitations of your solutions - find a few queries (2 cases are enough) that are not showing expected results, or worse, are not showing any results. Think about why it's happening and propose a solution (no need to implement it).
+
+Väčšina limitácií pri tomto fulltextovom vyhľadávaní je kvôli slovenčine. Hlavný problém je skloňovanie. Nasledujúca query nájde nájomné zmluvy, ale zmluvy o nájme už nie. Ak by boli slová v základnom tvare, tak výsledkov bolo oveľa viac.
+The biggest limitation in our solution is Slovak Language. We targeted word flexing as the main problem.
+As an example we can use words `kúpna zmluva` which has same meaning as `zmluva & kúpe`. If we were able to stem the words we would find more results.
+
+```sql
+select c.*
+from search_request req
+join contracts c on c.id = req.id
+where vector @@ to_tsquery('sk', 'zmluva & kúpe')
+```
+
+Also there is problem with correctly quering identifier for example if we knew that identifier has something with `134` in year `2011` the correct query that needs to be used is `134/2011`. Maybe users would like to also search for `134 2011` which does not work.
+
+```sql
+select c.name, c.department, c.supplier, c.identifier
+from search_request req
+join contracts c on c.id = req.id
+where req.identifier like '%134/2011%'
+```
+
+
+
+Hints:
+
+> The data is in slovak, so you will need to use an appropriate dictionary. Type \dF inside `psql` to see available configurations for your installation. There's no support for slovak language, don't worry about it, just create an unaccenting configuration based on the `simple` configuration.
    ```
-       ------------------------------
-        lines
-       ------------------------------
-        {9,39}
-        {4,39}
-        {5,31}
-        {4,31}
-        {6,39}
-        {5,39}
-        {9,31}
-        {6,31}
-        {5,30,31}
-        {6,30,31}
-        ...
-       ------------------------------
+    oz=# \dF
+                  List of text search configurations
+      Schema   |    Name    |              Description
+    ------------+------------+---------------------------------------
+    pg_catalog | danish     | configuration for danish language
+    pg_catalog | dutch      | configuration for dutch language
+    pg_catalog | english    | configuration for english language
+    pg_catalog | finnish    | configuration for finnish language
+    pg_catalog | french     | configuration for french language
+    pg_catalog | german     | configuration for german language
+    pg_catalog | hungarian  | configuration for hungarian language
+    pg_catalog | italian    | configuration for italian language
+    pg_catalog | norwegian  | configuration for norwegian language
+    pg_catalog | portuguese | configuration for portuguese language
+    pg_catalog | romanian   | configuration for romanian language
+    pg_catalog | russian    | configuration for russian language
+    pg_catalog | simple     | simple configuration
+    pg_catalog | spanish    | configuration for spanish language
+    pg_catalog | swedish    | configuration for swedish language
+    pg_catalog | turkish    | configuration for turkish language
    ```
+> To implement boosting, you must combine (e.g. multiply) the fulltext score with a boosting value. Since you want to boost by "freshness", compute a difference of current date and the `published_on` date. The result will be an `interval` datatype, which you want to convert to number of days, e.g. `extract(days from (now() - published_on))`. You will need to apply some smoothing functions or other rescaling to the number of days to dampen its impact and retain the value of fulltext score.
+
+> Searching by ICO will require a different kind of processing. You query will need to have (at least) 2 parts - one handling the fulltext search, and the other handling ICO search. Make sure to use a trigram index to keep the '%%' search fast.
+
+> If you don't want to concatenate the fields repeatedly (it really makes the query harder to read and is error-prone), feel free to create an extra column (with `ts_vector` type) and update the column with the concatenated string. You can now use this "computed" column in your queries.
+
+> You will need to copy&paste the input query into several places in your SQL query. It is OK and don't worry about it. Under "normal" circumstances, the SQL query would be dynamically generated by your application, with the input query interpolated into it.
+
 
 ## Recommended reading
+- https://www.postgresql.org/docs/9.4/static/textsearch.html
+- https://www.postgresql.org/docs/9.4/static/unaccent.html
+- https://www.postgresql.org/docs/9.4/pgtrgm.html
 
-- http://www.postgresql.org/docs/8.4/static/queries-with.html
